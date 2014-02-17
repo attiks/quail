@@ -835,7 +835,7 @@ doctypeProvided:
   title:
     en: "The document should contain a valid \"doctype\" declaration"
   description:
-    en: "Each document must contain a valid doctype declaration.."
+    en: "Each document must contain a valid doctype declaration."
   guidelines: []
   tags:
     - "doctype"

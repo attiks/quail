@@ -1,8 +1,19 @@
+var defaults = {
+  testNotApplicable: function () {},
+  testFailed: function () {},
+  testPassed: function () {},
+  testCantTell: function () {},
+  testUntested: function () {},
+  complete: function () {}
+};
+
+var statusTypes = ['inapplicable', 'passed', 'failed', 'cantTell', 'untested'];
+
 $.fn.quail = function(options) {
   if (!this.length) {
     return this;
   }
-  quail.options = options;
+  quail.options = $.extend({}, defaults, options);
   quail.html = this;
 
   //The quail builder at quailjs.org/build provides an in-scope test object.
@@ -23,68 +34,82 @@ $.expr[':'].quailCss = function(obj, index, meta, stack) {
 /**
  * Assembles data about the test and invokes appropriate callbacks.
  *
- * @param string type
- *   Possible values:  'inapplicable', 'failed', 'passed', 'cantTell',
- *   and 'untested'
+ * @param string status
+ *   Possible values:  'inapplicable', 'failed', 'passed' and 'cantTell'.
  * @param string testName
  *   The name of the test.
  * @param jQuery $element
  *   The DOM element, wrapped in jQuery, that the test was run against.
  * @param object options
  */
-function _processTestResult (type, testName, $element, options) {
-  var test = quail.accessibilityTests[testName];
-  var result = quail.accessibilityResults[testName];
-  options = options || {};
-
-  function isCallable (func) {
-    return typeof func === 'function' || typeof func === 'object';
-  }
-
+function _processTestCase (status, testName, $element, options) {
+  // @todo, should prefiltering be at the case or test level?
   if(typeof quail.options.preFilter !== 'undefined') {
     if(quail.options.preFilter(testName, $element, options) === false) {
       return;
     }
   }
-  var testability = (typeof test.testability !== 'undefined') ? test.testability : 'unknown';
+
+  // Standard per-case info.
   var info = {
-    element     : $element,
-    selector    : quail.defineUniqueSelector($element.length && $element[0] || null),
+    testName    : testName,
+    status      : status || 'cantTell',
+    $element     : $element || null,
+    selector    : quail.defineUniqueSelector($element && $element.length && $element[0] || null)
+  };
+  // Store each case under the top-level test result entry.
+  quail.accessibilityResults[testName].cases.push(info);
+}
+
+/**
+ * Assembles data about the test and invokes appropriate callbacks.
+ *
+ * @param string testName
+ *   The name of the test.
+ * @param object options
+ */
+function _processTestResult (testName, options) {
+  var test = quail.accessibilityTests[testName];
+  var result = quail.accessibilityResults[testName];
+  options = options || {};
+
+  var callbackMap = {
+    'inapplicable': quail.options.testNotApplicable,
+    'failed': quail.options.testFailed,
+    'passed': quail.options.testPassed
+  };
+
+  var testability = (typeof test.testability !== 'undefined') ? test.testability : 'unknown';
+
+  $.extend(result, {
+    elements    : [],
     location    : window && window.location || null,
     testName    : testName,
     test        : quail.accessibilityTests[testName],
     testability : testability,
     severity    : quail.testabilityTranslation[testability],
     options     : options
-  };
+  });
 
-  // Invoke test listeners;
-  switch (type) {
-    case 'inapplicable':
-      result.status = 'inapplicable';
-      if (isCallable(quail.options.testNotApplicable)) {
-        quail.options.testNotApplicable(info);
-      }
-      break;
-    case 'failed':
+  // The test applies only if cases were tested. The test is inapplicable if no
+  // cases exist. If cases do exist, assume the test passes until a failed case
+  // is found.
+  // @todo Add a callback for custom case processing on individual tests.
+  result.status = (result.cases.length) ? 'passed' : 'inapplicable';
+  $.each(result.cases, function (index, testCase) {
+    if (testCase.status === 'failed') {
+      result.status = 'failed';
       // @todo, this currently stores just the failures. We need to pass all
       // results.
-      result.elements.push($element);
-      result.status = 'failed';
-      if (isCallable(quail.options.testFailed)) {
-        quail.options.testFailed(info);
-      }
-      break;
-    case 'passed':
-      result.status = 'passed';
-      if (isCallable(quail.options.testPassed)) {
-        quail.options.testPassed(info);
-      }
-      break;
-    case 'cantTell':
-    case 'untested':
-      break;
-  }
+      result.elements.push(testCase.$element);
+    }
+  });
+
+  // @hack, a hack for tests that expect one element to represent all cases.
+  result.element = result.elements.length && result.elements[0];
+
+  // Invoke test listener.
+  callbackMap[result.status].call(null, result);
 }
 
 var quail = {
@@ -175,8 +200,10 @@ var quail = {
 
     quail.runTests();
     if(typeof quail.options.complete !== 'undefined') {
-      var results = {totals : {severe : 0, moderate : 0, suggestion : 0 },
-                    results : quail.accessibilityResults };
+      var results = {
+        totals : {severe : 0, moderate : 0, suggestion : 0 },
+        results : quail.accessibilityResults
+      };
       $.each(results.results, function(testName, result) {
         results.totals[quail.testabilityTranslation[quail.accessibilityTests[testName].testability]] += result.elements.length;
       });
@@ -202,7 +229,10 @@ var quail = {
    * @deprecated
    */
   testFails : function(testName, $element, options) {
-    _processTestResult('failed', testName, $element, options);
+    $element.each(function () {
+      _processTestCase('failed', testName, $(this), options);
+    });
+    _processTestResult(testName);
   },
 
   /**
@@ -219,9 +249,11 @@ var quail = {
       }
       var testType = test.type;
       var options = test.options || {};
-      quail.accessibilityResults[testName] = quail.accessibilityResults[testName] || {
+      var testRun = quail.accessibilityResults[testName] = quail.accessibilityResults[testName] || {
+        status: 'untested',
         test: test,
-        elements : []
+        elements : [],
+        cases: []
       };
 
       if(testType === 'selector') {
@@ -232,26 +264,39 @@ var quail = {
           var candidates = quail.html.find(options.selector);
           // Not applicable.
           if (!candidates.length) {
-            _processTestResult('inapplicable', testName, $(this));
+            testRun.status = 'inapplicable';
           }
           // Passes.
           candidates.not(options.filter).each(function () {
-            _processTestResult('passed', testName, $(this));
+            _processTestCase('passed', testName, $(this));
           });
           // Fails.
           candidates.filter(options.filter).each(function () {
-            _processTestResult('failed', testName, $(this));
+            _processTestCase('failed', testName, $(this));
           });
         }
         else {
           quail.html.find(options.selector).each(function() {
-            _processTestResult('failed', testName, $(this));
+            _processTestCase('failed', testName, $(this));
           });
         }
       }
       if(testType === 'custom') {
         if(typeof test.callback === 'object' || typeof test.callback === 'function') {
-          test.callback(quail);
+          var result = test.callback(quail);
+          // Process a returned test result object.
+          if (result && result.status) {
+            var types = statusTypes;
+            // If the returned type is one of the valid test result types,
+            // process it.
+            while (types.length > 0) {
+              var type = types.shift();
+              if (result.status === type) {
+                var args = [result.status, testName, result.$element, result.options];
+                _processTestCase.apply(null, args);
+              }
+            }
+          }
         }
         else {
           if(typeof quail[test.callback] !== 'undefined') {
@@ -261,6 +306,10 @@ var quail = {
       }
       if(typeof quail.components[testType] !== 'undefined') {
         quail.components[testType](testName, test);
+      }
+      // Post-processing on test cases results.
+      if (testRun.cases.length > 0 && testRun.status === 'untested') {
+        _processTestResult(testName);
       }
     });
   },
@@ -551,6 +600,11 @@ var quail = {
         }
       }
       return keepers;
+    }
+
+    // Indicate that the element is the document.
+    if (element && element.nodeType === 9) {
+      return 'document';
     }
 
     return element && generateSelector(element);

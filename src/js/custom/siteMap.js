@@ -13,6 +13,6 @@ quail.siteMap = function() {
     }
   });
   if(set) {
-    quail.testFails('siteMap', quail.html.find('body'));
+    quail.testFails('siteMap', $(document));
   }
 };
